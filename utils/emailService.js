@@ -4,10 +4,13 @@ const sendEmail = async (to, subject, text) => {
   try {
     // For development, you can use Ethereal Email, but for this project we use Gmail/SMTP
     const transporter = nodemailer.createTransport({
-      service: 'gmail', // Or use 'host' and 'port' for other providers
+      host: 'smtp.gmail.com',
+      port: 587,
+      secure: false,
+      family: 4, // Force IPv4 (Render free tier doesn't support IPv6)
       auth: {
         user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASS // Use App Password if using Gmail
+        pass: process.env.EMAIL_PASS
       }
     });
 
