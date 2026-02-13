@@ -1,0 +1,23 @@
+node_modules
+.env
+.env.*
+!.env.example
+.env.example
+.passwords.doc
+.test-chat.html
+
+# Logs
+logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode
+.idea
+*.sw?
+
+.test-chat.html
