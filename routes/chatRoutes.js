@@ -1,9 +1,13 @@
 const express = require('express');
-const { accessChat, fetchChats, getMessages, uploadChatFile } = require('../controllers/chatController');
+const { accessChat, fetchChats, getMessages, uploadChatFile, downloadChatFile } = require('../controllers/chatController');
 const protect = require('../middleware/authMiddleware');
 const chatUpload = require('../middleware/chatUpload');
 
 const router = express.Router();
+
+// Public route — browser navigates here directly (no JWT in header)
+// Safe because it only proxies Cloudinary URLs
+router.get('/download', downloadChatFile);
 
 router.use(protect);
 

@@ -77,7 +77,8 @@ exports.accessChat = async (req, res) => {
 exports.fetchChats = async (req, res) => {
   try {
     const chats = await Chat.find({
-      participants: { $in: [req.user.id] }
+      participants: { $in: [req.user.id] },
+      latestMessage: { $ne: null }
     })
       .populate("participants", "email role")
       .populate("item", "title price images status")
@@ -166,6 +167,86 @@ exports.uploadChatFile = async (req, res) => {
     });
   } catch (error) {
     console.error(error);
+    res.status(500).json({ success: false, message: 'Server Error' });
+  }
+};
+
+// @desc    Proxy-download a chat file (avoids Cloudinary raw access restrictions)
+// @route   GET /api/chats/download
+exports.downloadChatFile = async (req, res) => {
+  const { url, name } = req.query;
+
+  if (!url) {
+    return res.status(400).json({ success: false, message: 'url query param required' });
+  }
+
+  // Only allow Cloudinary URLs for security
+  if (!url.includes('res.cloudinary.com')) {
+    return res.status(400).json({ success: false, message: 'Invalid file URL' });
+  }
+
+  try {
+    // Extract public_id from Cloudinary raw URL
+    // URL format: https://res.cloudinary.com/<cloud>/raw/upload/v<version>/<public_id>
+    const match = url.match(/\/raw\/upload\/(?:v\d+\/)?(.+)$/);
+    if (!match) {
+      return res.status(400).json({ success: false, message: 'Could not parse Cloudinary URL' });
+    }
+    const publicId = match[1];
+
+    // Generate a signed URL using the Cloudinary SDK
+    const signedUrl = cloudinary.url(publicId, {
+      resource_type: 'raw',
+      sign_url: true,
+      secure: true,
+      type: 'authenticated',
+    });
+
+    // Also try with type 'upload' and signed
+    const signedUploadUrl = cloudinary.url(publicId, {
+      resource_type: 'raw',
+      sign_url: true,
+      secure: true,
+      type: 'upload',
+    });
+
+    const https = require('https');
+
+    const fetchAndPipe = (targetUrl, fallbackUrl) => {
+      https.get(targetUrl, (fileRes) => {
+        // Follow redirects
+        if ([301, 302, 303, 307, 308].includes(fileRes.statusCode) && fileRes.headers.location) {
+          return fetchAndPipe(fileRes.headers.location, fallbackUrl);
+        }
+
+        if (fileRes.statusCode !== 200) {
+          // Try fallback URL if primary fails
+          if (fallbackUrl) {
+            console.log(`Download proxy: trying fallback URL...`);
+            return fetchAndPipe(fallbackUrl, null);
+          }
+          console.error(`Download proxy: Cloudinary returned ${fileRes.statusCode}`);
+          return res.status(502).json({ success: false, message: 'Failed to fetch file from storage' });
+        }
+
+        const fileName = name || 'document';
+        const contentType = fileRes.headers['content-type'] || 'application/octet-stream';
+
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`);
+
+        fileRes.pipe(res);
+      }).on('error', (err) => {
+        console.error('Download proxy error:', err);
+        if (!res.headersSent) {
+          res.status(500).json({ success: false, message: 'Download failed' });
+        }
+      });
+    };
+
+    fetchAndPipe(signedUploadUrl, signedUrl);
+  } catch (error) {
+    console.error('Download proxy error:', error);
     res.status(500).json({ success: false, message: 'Server Error' });
   }
 };

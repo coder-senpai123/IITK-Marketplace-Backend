@@ -100,11 +100,68 @@ io.on('connection', async (socket) => {
   });
 
   // Send message (supports text, image, file)
+  // chatId can be a real Chat _id OR an Item _id (lazy creation)
   socket.on('send_message', async (data) => {
-    const { chatId, content, type, fileUrl, fileName, mimeType } = data;
+    const { chatId: rawId, content, type, fileUrl, fileName, mimeType } = data;
 
-    const chat = await Chat.findById(chatId).populate('item', 'status');
-    if (!chat) return;
+    let chat = await Chat.findById(rawId).populate('item', 'status');
+
+    // If no chat found, treat rawId as an itemId and create the chat lazily
+    if (!chat) {
+      try {
+        const item = await Item.findById(rawId);
+        if (!item) {
+          socket.emit("socket_error", { message: "Item not found" });
+          return;
+        }
+        if (item.seller.toString() === userId) {
+          socket.emit("socket_error", { message: "Cannot chat about your own item" });
+          return;
+        }
+        if (item.status === 'deleted') {
+          socket.emit("socket_error", { message: "This item has been removed" });
+          return;
+        }
+
+        // Find existing chat or create a new one
+        chat = await Chat.findOne({
+          item: rawId,
+          participants: { $all: [userId, item.seller], $size: 2 }
+        }).populate('item', 'status');
+
+        if (!chat) {
+          chat = await Chat.create({
+            item: rawId,
+            participants: [userId, item.seller],
+            lastMessageAt: Date.now()
+          });
+          chat = await Chat.findById(chat._id).populate('item', 'status');
+        }
+
+        // Join sender to the new chat room
+        socket.join(chat._id.toString());
+
+        // Join the seller to the chat room if they are online
+        const sellerSockets = await io.fetchSockets();
+        for (const s of sellerSockets) {
+          if (s.user && (s.user.id === item.seller.toString() || s.user._id === item.seller.toString())) {
+            s.join(chat._id.toString());
+          }
+        }
+
+        // Notify the sender about the real chat id so the frontend can redirect
+        socket.emit("chat_created", {
+          chatId: chat._id.toString(),
+          itemId: rawId
+        });
+      } catch (err) {
+        console.error("Lazy chat creation error:", err);
+        socket.emit("socket_error", { message: "Failed to create chat" });
+        return;
+      }
+    }
+
+    const realChatId = chat._id.toString();
 
     const isMember = chat.participants.some(
       (p) => p.toString() === userId
@@ -126,7 +183,7 @@ io.on('connection', async (socket) => {
 
       const newMessage = await Message.create({
         sender: userId,
-        chatId,
+        chatId: realChatId,
         content: msgContent,
         type: msgType,
         fileUrl: fileUrl || undefined,
@@ -136,7 +193,7 @@ io.on('connection', async (socket) => {
 
       const lastMsgText = msgType === 'text' ? content : (msgType === 'image' ? '📷 Image' : `📎 ${fileName || 'File'}`);
 
-      await Chat.findByIdAndUpdate(chatId, {
+      await Chat.findByIdAndUpdate(realChatId, {
         lastMessage: lastMsgText,
         lastMessageAt: Date.now(),
         latestMessage: newMessage._id
@@ -144,7 +201,7 @@ io.on('connection', async (socket) => {
 
       const fullMessage = await newMessage.populate('sender', 'email role');
 
-      io.to(chatId).emit('receive_message', fullMessage);
+      io.to(realChatId).emit('receive_message', fullMessage);
     } catch (error) {
       console.error('Socket Error:', error);
     }
